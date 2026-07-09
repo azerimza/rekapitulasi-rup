@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 
 # 1. Konfigurasi Halaman
-st.set_page_config(page_title="Rekap RUP per OPD", page_icon="📑", layout="wide")
+st.set_page_config(page_title="Ekstrak Laporan RUP per OPD", page_icon="📥", layout="wide")
 
-st.title("📑 Tabel Rekapitulasi Paket RUP per OPD")
-st.write("Aplikasi ini menghitung jumlah paket dan menyusunnya dalam format laporan standar audit.")
+st.title("📥 Ekstrak Laporan RUP Terfilter & Tersortir")
+st.write("Unggah data, filter berdasarkan OPD, pilih metode sortir, lalu unduh hasilnya secara instan.")
 
 # 2. Upload Data RUP
 uploaded_file = st.file_uploader("Unggah File Excel/CSV RUP Anda", type=["xlsx", "csv"])
@@ -19,19 +18,11 @@ if uploaded_file is not None:
         else:
             df = pd.read_excel(uploaded_file)
         
-        # Validasi jumlah kolom
-        if df.shape[1] < 5:
-            st.error("Format tidak sesuai. File harus memiliki minimal sampai Kolom E.")
-            st.stop()
-            
-        # Pemetaan Kolom
+        # Pemetaan Kolom Berdasarkan Posisi
         nama_kolom_B = df.columns[1]  # Kolom B: Nama OPD
         nama_kolom_E = df.columns[4]  # Kolom E: Metode Pengadaan
         
-        # ==========================================
-        # 3. PROSES PEMETAAN KATEGORI (KOLOM E)
-        # ==========================================
-        # Dictionary pemetaan agar penamaan seragam
+        # Standarisasi Kategori Metode Pemilihan
         peta_metode = {
             "e-purchasing": "E-Purchasing",
             "pengadaan langsung": "Pengadaan Langsung",
@@ -41,88 +32,104 @@ if uploaded_file is not None:
             "dikecualikan": "Dikecualikan"
         }
         
-        # Bersihkan teks di Kolom E (ubah ke huruf kecil & hilangkan spasi lebih)
         metode_bersih = df[nama_kolom_E].astype(str).str.strip().str.lower()
-        
-        # Buat kolom baru: Jika ada di map, gunakan nama resminya. Jika tidak, "Swakelola".
         df['Kategori Final'] = metode_bersih.map(peta_metode).fillna("Swakelola")
         
         # ==========================================
-        # 4. MEMBUAT TABEL REKAPITULASI SESUAI FORMAT
+        # 3. SIDEBAR: FILTER & SORTIR OTOMATIS
         # ==========================================
-        # Hitung jumlah tiap kategori per OPD
-        rekap = pd.crosstab(df[nama_kolom_B], df['Kategori Final']).reset_index()
+        st.sidebar.header("⚙️ Pengaturan Laporan")
+        
+        # FITUR FILTER: Memilih satu, beberapa, atau semua OPD
+        list_opd = sorted(df[nama_kolom_B].dropna().unique())
+        pilihan_opd = st.sidebar.multiselect(
+            "Pilih OPD yang Ingin Diekstrak:", 
+            options=list_opd,
+            placeholder="Menampilkan Semua OPD (Silakan pilih untuk memfilter)"
+        )
+        
+        # FITUR SORTIR: Memilih basis pengurutan data
+        opsi_sortir = st.sidebar.selectbox(
+            "Sortir Urutan Tabel Berdasarkan:",
+            options=[
+                "Nama OPD (A ke Z)", 
+                "Total Paket Terbanyak 🔥", 
+                "Paket Penyedia Terbanyak", 
+                "Paket Swakelola Terbanyak"
+            ]
+        )
+        
+        # Mengaplikasikan Filter OPD ke Data Mentah
+        df_filtered = df.copy()
+        if pilihan_opd:
+            df_filtered = df_filtered[df_filtered[nama_kolom_B].isin(pilihan_opd)]
+
+        # ==========================================
+        # 4. PROSES PEMBUATAN TABEL REKAPITULASI
+        # ==========================================
+        rekap = pd.crosstab(df_filtered[nama_kolom_B], df_filtered['Kategori Final']).reset_index()
         rekap = rekap.rename(columns={nama_kolom_B: 'Nama OPD'})
         
-        # Daftar kolom metode penyedia yang WAJIB ada di tabel
-        kolom_penyedia = [
-            "E-Purchasing", "Pengadaan Langsung", "Penunjukan Langsung", 
-            "Seleksi", "Tender", "Dikecualikan"
-        ]
-        
-        # Antisipasi: Jika di data Excel tidak ada sama sekali paket "Tender" atau lainnya, 
-        # Pandas tidak akan membuat kolomnya. Kita harus paksa buat kolom tersebut dengan isi angka 0.
+        # Memastikan semua kolom standar audit tersedia
+        kolom_penyedia = ["E-Purchasing", "Pengadaan Langsung", "Penunjukan Langsung", "Seleksi", "Tender", "Dikecualikan"]
         for col in kolom_penyedia + ["Swakelola"]:
             if col not in rekap.columns:
                 rekap[col] = 0
                 
-        # Menghitung Total "Penyedia" (Gabungan dari semua kolom metode penyedia)
+        # Hitung akumulasi Total Penyedia dan Total Keseluruhan Paket
         rekap['Penyedia'] = rekap[kolom_penyedia].sum(axis=1)
+        rekap['Total Paket'] = rekap['Penyedia'] + rekap['Swakelola']
         
-        # Menambahkan nomor urut di paling depan
-        rekap.insert(0, 'No', range(1, len(rekap) + 1))
-        
-        # Menyusun urutan kolom PERSIS seperti permintaan Anda
-        urutan_kolom_final = [
-            'No', 'Nama OPD', 'Penyedia', 'Swakelola', 
-            'E-Purchasing', 'Pengadaan Langsung', 'Penunjukan Langsung', 
-            'Seleksi', 'Tender', 'Dikecualikan'
-        ]
-        tabel_final = rekap[urutan_kolom_final]
+        # ==========================================
+        # 5. EKSEKUSI SORTIR (PENGURUTAN DATA)
+        # ==========================================
+        if opsi_sortir == "Nama OPD (A ke Z)":
+            rekap = rekap.sort_values(by="Nama OPD", ascending=True)
+        elif opsi_sortir == "Total Paket Terbanyak 🔥":
+            rekap = rekap.sort_values(by="Total Paket", ascending=False)
+        elif opsi_sortir == "Paket Penyedia Terbanyak":
+            rekap = rekap.sort_values(by="Penyedia", ascending=False)
+        elif opsi_sortir == "Paket Swakelola Terbanyak":
+            rekap = rekap.sort_values(by="Swakelola", ascending=False)
 
-        # Menambahkan Baris "TOTAL KESELURUHAN" di paling bawah
-        total_row = pd.DataFrame(tabel_final.sum(numeric_only=True)).T
+        # Menyusun urutan kolom final laporan Anda
+        urutan_kolom = [
+            'Nama OPD', 'Penyedia', 'Swakelola', 
+            'E-Purchasing', 'Pengadaan Langsung', 'Penunjukan Langsung', 
+            'Seleksi', 'Tender', 'Dikecualikan', 'Total Paket'
+        ]
+        tabel_siap_cetak = rekap[urutan_kolom].copy()
+        
+        # Membuat penomoran urut otomatis (No) setelah data selesai disortir
+        tabel_siap_cetak.insert(0, 'No', range(1, len(tabel_siap_cetak) + 1))
+
+        # Menambahkan Baris "TOTAL KESELURUHAN" di bagian paling bawah laporan
+        total_row = pd.DataFrame(tabel_siap_cetak.sum(numeric_only=True)).T
         total_row['No'] = ""
         total_row['Nama OPD'] = "TOTAL KESELURUHAN"
-        tabel_final = pd.concat([tabel_final, total_row], ignore_index=True)
+        laporan_final = pd.concat([tabel_siap_cetak, total_row], ignore_index=True)
 
         # ==========================================
-        # 5. MENAMPILKAN HASIL
+        # 6. TAMPILAN & TOMBOL EKSTRAK LAPORAN
         # ==========================================
-        st.subheader("📋 Tabel Rekapitulasi Paket RUP")
+        st.subheader("📋 Preview Hasil Laporan")
+        st.write(f"Menampilkan {len(tabel_siap_cetak)} Perangkat Daerah terpilih.")
         
-        # Menampilkan tabel (sembunyikan index bawaan pandas agar nomor urut 'No' terlihat rapi)
-        st.dataframe(tabel_final, use_container_width=True, hide_index=True)
+        # Tampilkan tabel interaktif di browser
+        st.dataframe(laporan_final, use_container_width=True, hide_index=True)
         
-        # Tombol Unduh
-        csv_rekap = tabel_final.to_csv(index=False).encode('utf-8')
+        # Tombol Sakti untuk Ekstrak / Download Hasil Laporan
+        # Jika Anda memilih 3 OPD di sidebar, maka file CSV yang terdownload HANYA berisi 3 OPD tersebut beserta baris totalnya.
+        csv_data = laporan_final.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="📥 Unduh Tabel Laporan (CSV)",
-            data=csv_rekap,
-            file_name="Laporan_RUP_OPD.csv",
-            mime="text/csv"
+            label="📥 Ekstrak & Unduh Laporan Terfilter (CSV)",
+            data=csv_data,
+            file_name="Laporan_Audit_RUP_Tersortir.csv",
+            mime="text/csv",
+            help="Klik di sini untuk mengunduh tabel di atas ke dalam format Excel/CSV"
         )
-        
-        # ==========================================
-        # 6. GRAFIK (OPSIONAL)
-        # ==========================================
-        st.write("---")
-        st.subheader("📈 Proporsi Penyedia vs Swakelola")
-        # Kita ambil data sebelum baris total ditambahkan untuk grafik
-        df_grafik = tabel_final[tabel_final['Nama OPD'] != 'TOTAL KESELURUHAN']
-        
-        fig = px.bar(
-            df_grafik, 
-            x='Nama OPD', 
-            y=['Penyedia', 'Swakelola'],
-            title="Perbandingan Jumlah Paket Penyedia vs Swakelola per OPD",
-            labels={'value': 'Jumlah Paket', 'variable': 'Kategori Pengadaan'},
-            barmode='group'
-        )
-        st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
-        st.error(f"Terjadi kegagalan saat memproses file Excel: {e}")
-        st.info("💡 Pastikan baris pertama pada file Excel Anda adalah Judul Kolom dan datanya sesuai format.")
+        st.error(f"Terjadi kesalahan pemrosesan: {e}")
 else:
-    st.info("💡 Silakan unggah file Excel/CSV RUP Anda untuk menghasilkan tabel laporan.")
+    st.info("💡 Silakan unggah file data RUP Anda untuk mengaktifkan modul ekstrak laporan.")
